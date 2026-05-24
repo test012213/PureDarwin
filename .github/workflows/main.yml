@@ -42,13 +42,12 @@ jobs:
           echo "Patch 2 applied."
         fi
 
-    # FIX #3: Strip out the broken deprecated Clang argument from the XNU inner Makefiles
-    - name: Strip Deprecated Security Flag from XNU Makefiles
+    # FIX #3: Bruteforce remove any multiline occurrences of the broken flag inside XNU config files
+    - name: Hard Scrub Unrecognized Clang Flag
       run: |
-        echo "Searching and destroying broken auto-var-init-zero flags inside XNU sources..."
-        # Finds any Makefiles containing the flag within the xnu directory and cleanly removes it
-        find src/Kernel/xnu -name "Makefile*" -type f -exec sed -i '' 's/-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang//g' {} +
-        echo "Patch 3 successfully processed."
+        echo "Performing deep search and destroy of the trivial-auto-var flag..."
+        find src/Kernel/xnu -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.conf" \) -exec sed -i '' 's/-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang//g' {} +
+        echo "Deep scrub completed."
 
     - name: Configure CMake
       run: |
@@ -64,10 +63,13 @@ jobs:
     - name: Build Project
       run: |
         cd build
+        # Force the compiler backend to ignore any unknown/deprecated flags passed down to submodules
+        export CFLAGS="-Wno-everything -Wno-unknown-argument -w"
+        export CXXFLAGS="-Wno-everything -Wno-unknown-argument -w"
+        export KCFLAGS="-Wno-everything -Wno-unknown-argument -w"
+        export WARNING_CFLAGS="-w -Wno-unknown-argument"
         export ARCHFLAGS="-arch arm64 -arch x86_64"
-        export WARNING_CFLAGS="-w"
         
-        # Runs compilation natively 
         ninja || ninja --verbose -j 1
 
     - name: Upload Build Artifacts
@@ -76,4 +78,3 @@ jobs:
         name: puredarwin-compiled-output
         path: build/
         if-no-files-found: warn
-
