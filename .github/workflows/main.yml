@@ -5,42 +5,39 @@ on:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
-  workflow_dispatch: # Allows manual run via the Actions UI
+  workflow_dispatch: 
 
 jobs:
   build-xnu:
-    runs-on: macos-latest
+    # Downgrade to macOS 13 to use a compatible legacy Clang compiler environment
+    runs-on: macos-13
 
     steps:
-    # 1. Check out the repository source code
     - name: Checkout Source Code
       uses: actions/checkout@v4
 
-    # 2. Force the runner to utilize the correct Xcode tools path
-    - name: Select Xcode Version
+    # Force select Xcode 14.3.1 toolchain paths 
+    - name: Select Legacy Xcode Version
       run: |
-        sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+        sudo xcode-select -s /Applications/Xcode_14.3.1.app/Contents/Developer
         xcodebuild -version
 
-    # 3. Setup dependencies via Homebrew
     - name: Install Dependencies
       run: |
         brew install base64 ninja cmake openssl
 
-    # 4. Configure the build directory using CMake
     - name: Configure CMake
       run: |
         mkdir build
         cd build
-        cmake -G Ninja -DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3 ..
+        # Specify OpenSSL root flags for the Homebrew environment path layout
+        cmake -G Ninja -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl@3 ..
 
-    # 5. Compile the kernel and components using Ninja
     - name: Build Project
       run: |
         cd build
         ninja
 
-    # 6. Compress and upload compiled output artifacts
     - name: Upload Build Artifacts
       uses: actions/upload-artifact@v4
       with:
