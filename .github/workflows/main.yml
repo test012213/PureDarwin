@@ -1,11 +1,11 @@
-name: Build PureDarwin XNU Kernel
+name: Build PureDarwin
 
 on:
   push:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
-  workflow_dispatch: # Allows manual trigger from the Actions tab
+  workflow_dispatch: # Allows manual run via the Actions UI
 
 jobs:
   build-xnu:
@@ -16,29 +16,34 @@ jobs:
     - name: Checkout Source Code
       uses: actions/checkout@v4
 
-    # 2. Select the correct Xcode version
+    # 2. Force the runner to utilize the correct Xcode tools path
     - name: Select Xcode Version
       run: |
         sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
         xcodebuild -version
 
-    # 3. Download and install build dependencies via Homebrew
+    # 3. Setup dependencies via Homebrew
     - name: Install Dependencies
       run: |
-        brew install base64 ninja cmake
+        brew install base64 ninja cmake openssl
 
-    # 4. Grant permission and execute the official PureDarwin xnubuild script
-    - name: Run XNU Build Script
+    # 4. Configure the build directory using CMake
+    - name: Configure CMake
       run: |
-        chmod +x xnubuild.sh
-        ./xnubuild.sh -travis
+        mkdir build
+        cd build
+        cmake -G Ninja -DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3 ..
 
-    # 5. Extract and upload the finished kernel binary as a downloadable file
-    - name: Upload Kernel Artifact
+    # 5. Compile the kernel and components using Ninja
+    - name: Build Project
+      run: |
+        cd build
+        ninja
+
+    # 6. Compress and upload compiled output artifacts
+    - name: Upload Build Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: puredarwin-xnu-kernel
-        path: |
-          build/
-          BUILD/
+        name: puredarwin-compiled-output
+        path: build/
         if-no-files-found: warn
