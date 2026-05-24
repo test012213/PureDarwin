@@ -9,7 +9,6 @@ on:
 
 jobs:
   build-xnu:
-    # Use a modern, actively supported runner environment
     runs-on: macos-15
 
     steps:
@@ -25,15 +24,21 @@ jobs:
       run: |
         brew install base64 ninja cmake openssl
 
-    - name: Configure CMake with Legacy Flags
+    # Fix the missing namespace member bug via inline code patching
+    - name: Patch Code Sign Blobs Error
+      run: |
+        TARGET_FILE="tools/cctools/ld64/src/ld/code-sign-blobs/blob.h"
+        echo "Patching legacy structure error inside $TARGET_FILE..."
+        
+        # Replaces 'this->BlobCore::clone()' with '(BlobCore*)this->clone()' or matching standard layout 
+        # By removing the restrictive explicit parent namespace scope qualifier that confuses modern Clang
+        sed -i '' 's/this->BlobCore::clone()/((BlobCore\*)this)->clone()/g' "$TARGET_FILE"
+
+    - name: Configure CMake
       run: |
         mkdir build
         cd build
-        # Pass CXX flags to tolerate legacy structural code design rules
-        cmake -G Ninja \
-          -DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3 \
-          -DCMAKE_CXX_FLAGS="-Wno-error=delete-non-virtual-dtor -Wno-error=c++11-extensions" \
-          ..
+        cmake -G Ninja -DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3 ..
 
     - name: Build Project
       run: |
