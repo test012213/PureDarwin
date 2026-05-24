@@ -9,7 +9,7 @@ on:
 
 jobs:
   build-xnu:
-    # Force the job onto the standard, free Intel x86_64 pool
+    # Keeps architecture locked to Intel x86_64 standard pools safely
     runs-on: macos-15-intel
 
     steps:
@@ -30,7 +30,7 @@ jobs:
       run: |
         brew install ninja cmake openssl
 
-    # FIX #1: Patch for the ld64 linker template scope error (with fail-fast safety)
+    # FIX #1: Patch for the ld64 linker template scope error (with fail-fast validation)
     - name: Patch Legacy Scoping Error in ld64
       run: |
         TARGET_FILE="tools/cctools/ld64/src/ld/code-sign-blobs/blob.h"
@@ -41,7 +41,7 @@ jobs:
           echo "ERROR: Patch 1 target file missing!" && exit 1
         fi
 
-    # FIX #2: Perl target matching specific structural macro signatures safely (with fail-fast safety)
+    # FIX #2: Perl target matching specific structural macro signatures safely (with fail-fast validation)
     - name: Patch PCI Family 32-Bit Bitshift Overflow
       run: |
         PCI_FILE="src/Kernel/Extensions/IOPCIFamily/include/IOKit/apiodma/ApplePIODMADefinitions.h"
@@ -76,7 +76,8 @@ jobs:
           -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-w" \
           ..
 
-    # Optimized compilation: Attempts -j4 parallel paths for speed, switches to -j1 if racing triggers
+    # Forces compilation to run in verbose serial mode from target 1
+    # This prevents the log from truncating and guarantees the exact error is captured
     - name: Build Project
       run: |
         cd build
@@ -87,17 +88,16 @@ jobs:
         export ARCHFLAGS="-arch x86_64"
         export MAKEFLAGS="-j1"
         
-        echo "=== Attempting Parallel Build (-j4) ==="
-        ninja -j4 --verbose || { echo "Parallel build failed. Falling back to Serial Build (-j1)..."; ninja -j1 --verbose; }
+        # Removed the parallel optimization block entirely to ensure verbose tracking on failure
+        ninja -j1 --verbose
 
-    # Post-execution trap step. Tracks down hidden errors inside child cmake instances
+    # Uses the shell precedence fix proposed by the model review
     - name: Dump Detailed Failure Logs
       if: failure()
       run: |
         echo "=== SCANNING FOR INNER LOG ENCAPSULATIONS ==="
         find build \( -name "*.log" -o -name "CMakeError.log" \) -exec echo "--- LOG: {} ---" \; -exec head -n 150 {} \;
 
-    # Uploads key kernel binaries rather than choking on giant build trees
     - name: Upload Kernel Artifacts
       uses: actions/upload-artifact@v4
       with:
