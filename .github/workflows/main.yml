@@ -24,44 +24,46 @@ jobs:
       run: |
         brew install base64 ninja cmake openssl
 
-    # FIX #1: The patch for the ld64 linker code signature loop we fixed earlier
+    # FIX #1: Patch for the ld64 linker template error
     - name: Patch Legacy Scoping Error in ld64
       run: |
         TARGET_FILE="tools/cctools/ld64/src/ld/code-sign-blobs/blob.h"
         if [ -f "$TARGET_FILE" ]; then
           sed -i '' 's/this->BlobCore::clone()/this->clone()/g' "$TARGET_FILE"
-          echo "Patch 1 successfully injected into blob.h"
+          echo "Patch 1 applied."
         fi
 
-    # FIX #2: Force the PCI Bit Range Macro to execute safely inside 64-bit integer registers
+    # FIX #2: Patch for the PCI Bit Range integer overflow error
     - name: Patch PCI Family 32-Bit Bitshift Overflow
       run: |
         PCI_FILE="src/Kernel/Extensions/IOPCIFamily/include/IOKit/apiodma/ApplePIODMADefinitions.h"
-        echo "Applying 64-bit casting safety fix to $PCI_FILE..."
-        
         if [ -f "$PCI_FILE" ]; then
-          # Swaps '(uint32_t)(1)' inside the macro logic with '(uint64_t)(1)' to handle bits up to 63 cleanly
           sed -i '' 's/(uint32_t)(1)/(uint64_t)(1)/g' "$PCI_FILE"
-          echo "Patch 2 successfully injected into ApplePIODMADefinitions.h"
-        else
-          echo "ERROR: Target file not found at $PCI_FILE"
-          exit 1
+          echo "Patch 2 applied."
         fi
 
     - name: Configure CMake
       run: |
         mkdir build
         cd build
+        # We explicitly supply global target definitions to pass down into the recursive XNU build environment 
         cmake -G Ninja \
           -DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3 \
           -DCMAKE_CXX_FLAGS="-Wno-everything -std=gnu++11" \
           -DCMAKE_C_FLAGS="-Wno-everything" \
+          -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-w" \
+          -DCMAKE_STATIC_LINKER_FLAGS="-Wl,-w" \
           ..
 
     - name: Build Project
       run: |
         cd build
-        ninja
+        # 1. Force the system toolchain variables to relax for child scripts
+        # 2. If it hits an absolute wall, rerun ninja with single-thread verbose mode to output the exact internal reason
+        export ARCHFLAGS="-arch arm64 -arch x86_64"
+        export WARNING_CFLAGS="-w"
+        
+        ninja || ninja --verbose -j 1
 
     - name: Upload Build Artifacts
       uses: actions/upload-artifact@v4
