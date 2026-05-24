@@ -9,29 +9,31 @@ on:
 
 jobs:
   build-xnu:
-    # Downgrade to macOS 13 to use a compatible legacy Clang compiler environment
-    runs-on: macos-13
+    # Use a modern, actively supported runner environment
+    runs-on: macos-15
 
     steps:
     - name: Checkout Source Code
       uses: actions/checkout@v4
 
-    # Force select Xcode 14.3.1 toolchain paths 
-    - name: Select Legacy Xcode Version
+    - name: Select Xcode Version
       run: |
-        sudo xcode-select -s /Applications/Xcode_14.3.1.app/Contents/Developer
+        sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
         xcodebuild -version
 
     - name: Install Dependencies
       run: |
         brew install base64 ninja cmake openssl
 
-    - name: Configure CMake
+    - name: Configure CMake with Legacy Flags
       run: |
         mkdir build
         cd build
-        # Specify OpenSSL root flags for the Homebrew environment path layout
-        cmake -G Ninja -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl@3 ..
+        # Pass CXX flags to tolerate legacy structural code design rules
+        cmake -G Ninja \
+          -DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3 \
+          -DCMAKE_CXX_FLAGS="-Wno-error=delete-non-virtual-dtor -Wno-error=c++11-extensions" \
+          ..
 
     - name: Build Project
       run: |
