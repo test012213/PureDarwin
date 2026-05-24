@@ -5,7 +5,7 @@ on:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
-  workflow_dispatch: # Allows you to manually trigger the build via GitHub UI
+  workflow_dispatch: # Allows manual trigger from the Actions tab
 
 jobs:
   build-xnu:
@@ -16,24 +16,22 @@ jobs:
     - name: Checkout Source Code
       uses: actions/checkout@v4
 
-    # 2. Select the correct Xcode version (adjust if PureDarwin requires an older version)
+    # 2. Select the correct Xcode version
     - name: Select Xcode Version
       run: |
         sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
         xcodebuild -version
 
-    # 3. Download and install build dependencies via Homebrew if needed
+    # 3. Download and install build dependencies via Homebrew
     - name: Install Dependencies
       run: |
-        brew install base64 ninja
+        brew install base64 ninja cmake
 
-    # 4. Execute the PureDarwin build scripts
-    - name: Run XNU Build
+    # 4. Grant permission and execute the official PureDarwin xnubuild script
+    - name: Run XNU Build Script
       run: |
-        # Replace 'make' with the exact build command or script specified by your PureDarwin branch
-        # e.g., ./xnubuild or make
-        make setup
-        make
+        chmod +x xnubuild.sh
+        ./xnubuild.sh -travis
 
     # 5. Extract and upload the finished kernel binary as a downloadable file
     - name: Upload Kernel Artifact
@@ -41,6 +39,6 @@ jobs:
       with:
         name: puredarwin-xnu-kernel
         path: |
-          BUILD/obj/RELEASE_X86_64/mach_kernel
-          BUILD/obj/RELEASE_ARM64/mach_kernel
+          build/
+          BUILD/
         if-no-files-found: warn
