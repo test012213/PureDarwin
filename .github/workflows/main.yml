@@ -24,19 +24,27 @@ jobs:
       run: |
         brew install base64 ninja cmake openssl
 
-    # CRITICAL: This patch MUST run BEFORE 'mkdir build' or 'cmake'
+    # FIX #1: The patch for the ld64 linker code signature loop we fixed earlier
     - name: Patch Legacy Scoping Error in ld64
       run: |
         TARGET_FILE="tools/cctools/ld64/src/ld/code-sign-blobs/blob.h"
-        echo "Applying targeted fix to $TARGET_FILE..."
-        
-        # Verify file presence before patching
         if [ -f "$TARGET_FILE" ]; then
-          # Strips out 'this->BlobCore::' so Clang performs a normal member lookup on the object instance
           sed -i '' 's/this->BlobCore::clone()/this->clone()/g' "$TARGET_FILE"
-          echo "Patch successfully injected into blob.h"
+          echo "Patch 1 successfully injected into blob.h"
+        fi
+
+    # FIX #2: Force the PCI Bit Range Macro to execute safely inside 64-bit integer registers
+    - name: Patch PCI Family 32-Bit Bitshift Overflow
+      run: |
+        PCI_FILE="src/Kernel/Extensions/IOPCIFamily/include/IOKit/apiodma/ApplePIODMADefinitions.h"
+        echo "Applying 64-bit casting safety fix to $PCI_FILE..."
+        
+        if [ -f "$PCI_FILE" ]; then
+          # Swaps '(uint32_t)(1)' inside the macro logic with '(uint64_t)(1)' to handle bits up to 63 cleanly
+          sed -i '' 's/(uint32_t)(1)/(uint64_t)(1)/g' "$PCI_FILE"
+          echo "Patch 2 successfully injected into ApplePIODMADefinitions.h"
         else
-          echo "ERROR: Target file not found at $TARGET_FILE"
+          echo "ERROR: Target file not found at $PCI_FILE"
           exit 1
         fi
 
