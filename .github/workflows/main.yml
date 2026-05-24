@@ -42,11 +42,18 @@ jobs:
           echo "Patch 2 applied."
         fi
 
+    # FIX #3: Strip out the broken deprecated Clang argument from the XNU inner Makefiles
+    - name: Strip Deprecated Security Flag from XNU Makefiles
+      run: |
+        echo "Searching and destroying broken auto-var-init-zero flags inside XNU sources..."
+        # Finds any Makefiles containing the flag within the xnu directory and cleanly removes it
+        find src/Kernel/xnu -name "Makefile*" -type f -exec sed -i '' 's/-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang//g' {} +
+        echo "Patch 3 successfully processed."
+
     - name: Configure CMake
       run: |
         mkdir build
         cd build
-        # Removed the broken STATIC_LINKER_FLAGS that broke the 'ar' tool
         cmake -G Ninja \
           -DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3 \
           -DCMAKE_CXX_FLAGS="-Wno-everything -std=gnu++11" \
@@ -60,7 +67,7 @@ jobs:
         export ARCHFLAGS="-arch arm64 -arch x86_64"
         export WARNING_CFLAGS="-w"
         
-        # If it hits a snag near the finish line, verbose mode logs the exact sub-process issue
+        # Runs compilation natively 
         ninja || ninja --verbose -j 1
 
     - name: Upload Build Artifacts
@@ -69,3 +76,4 @@ jobs:
         name: puredarwin-compiled-output
         path: build/
         if-no-files-found: warn
+
