@@ -24,23 +24,36 @@ jobs:
       run: |
         brew install base64 ninja cmake openssl
 
-    - name: Configure CMake with Explicit Scoping Fixes
+    # CRITICAL: This patch MUST run BEFORE 'mkdir build' or 'cmake'
+    - name: Patch Legacy Scoping Error in ld64
+      run: |
+        TARGET_FILE="tools/cctools/ld64/src/ld/code-sign-blobs/blob.h"
+        echo "Applying targeted fix to $TARGET_FILE..."
+        
+        # Verify file presence before patching
+        if [ -f "$TARGET_FILE" ]; then
+          # Strips out 'this->BlobCore::' so Clang performs a normal member lookup on the object instance
+          sed -i '' 's/this->BlobCore::clone()/this->clone()/g' "$TARGET_FILE"
+          echo "Patch successfully injected into blob.h"
+        else
+          echo "ERROR: Target file not found at $TARGET_FILE"
+          exit 1
+        fi
+
+    - name: Configure CMake
       run: |
         mkdir build
         cd build
-        # 1. We completely strip the explicit 'BlobCore::' namespace limitation by setting it globally 
-        # 2. We add standard relaxation flags to allow legacy code signatures to pass compilation checks.
         cmake -G Ninja \
           -DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3 \
-          -DCMAKE_CXX_FLAGS="-Wno-everything -fpermissive -std=gnu++11" \
+          -DCMAKE_CXX_FLAGS="-Wno-everything -std=gnu++11" \
           -DCMAKE_C_FLAGS="-Wno-everything" \
           ..
 
     - name: Build Project
       run: |
         cd build
-        # Run compilation using ninja with forced continuation flags if minor warnings pop up
-        ninja || ninja -j 1
+        ninja
 
     - name: Upload Build Artifacts
       uses: actions/upload-artifact@v4
