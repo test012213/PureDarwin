@@ -9,72 +9,101 @@ on:
 
 jobs:
   build-xnu:
-    runs-on: macos-15
+    # Force the job onto the standard, free Intel x86_64 pool
+    runs-on: macos-15-intel
 
     steps:
     - name: Checkout Source Code
       uses: actions/checkout@v4
 
-    - name: Select Xcode Version
+    - name: Initialize Submodules
       run: |
+        git submodule update --init --recursive
+
+    - name: Setup Developer Environment & Licenses
+      run: |
+        sudo xcodebuild -license accept
         sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
         xcodebuild -version
 
-    - name: Install Dependencies
+    - name: Install Core Dependencies
       run: |
-        brew install base64 ninja cmake openssl
+        brew install ninja cmake openssl
 
-    # FIX #1: Patch for the ld64 linker template error
+    # FIX #1: Patch for the ld64 linker template scope error (with fail-fast safety)
     - name: Patch Legacy Scoping Error in ld64
       run: |
         TARGET_FILE="tools/cctools/ld64/src/ld/code-sign-blobs/blob.h"
         if [ -f "$TARGET_FILE" ]; then
           sed -i '' 's/this->BlobCore::clone()/this->clone()/g' "$TARGET_FILE"
           echo "Patch 1 applied."
+        else
+          echo "ERROR: Patch 1 target file missing!" && exit 1
         fi
 
-    # FIX #2: Patch for the PCI Bit Range integer overflow error
+    # FIX #2: Perl target matching specific structural macro signatures safely (with fail-fast safety)
     - name: Patch PCI Family 32-Bit Bitshift Overflow
       run: |
         PCI_FILE="src/Kernel/Extensions/IOPCIFamily/include/IOKit/apiodma/ApplePIODMADefinitions.h"
         if [ -f "$PCI_FILE" ]; then
-          sed -i '' 's/(uint32_t)(1)/(uint64_t)(1)/g' "$PCI_FILE"
-          echo "Patch 2 applied."
+          perl -pi -e 's|#define APIODMABitRange32\(start, end\)\s+.*|#define APIODMABitRange32(start, end) (~(((uint64_t)(1) << start) - 1) & (((uint64_t)(1) << end) \| (((uint64_t)(1) << end) - 1)))|g' "$PCI_FILE"
+          echo "Patch 2 safely applied via Perl."
+        else
+          echo "ERROR: Patch 2 target file missing!" && exit 1
         fi
 
-    # FIX #3: Bruteforce remove any multiline occurrences of the broken flag inside XNU config files
-    - name: Hard Scrub Unrecognized Clang Flag
+    # FIX #3: Direct scrub of the invalid compiler argument from core XNU configurations
+    - name: Patch Core XNU Makedefs Structure
       run: |
-        echo "Performing deep search and destroy of the trivial-auto-var flag..."
-        find src/Kernel/xnu -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.conf" \) -exec sed -i '' 's/-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang//g' {} +
-        echo "Deep scrub completed."
+        MAKEDEF_FILE="src/Kernel/xnu/makedefs/MakeInc.def"
+        if [ -f "$MAKEDEF_FILE" ]; then
+          sed -i '' 's/-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang//g' "$MAKEDEF_FILE"
+          echo "Master flag successfully scrubbed from XNU definitions file."
+        else
+          echo "Searching alternate definitions paths..."
+          find src/Kernel/xnu -name "MakeInc.def" -exec sed -i '' 's/-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang//g' {} +
+        fi
 
     - name: Configure CMake
       run: |
         mkdir build
         cd build
         cmake -G Ninja \
-          -DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3 \
-          -DCMAKE_CXX_FLAGS="-Wno-everything -std=gnu++11" \
-          -DCMAKE_C_FLAGS="-Wno-everything" \
+          -DCMAKE_OSX_ARCHITECTURES="x86_64" \
+          -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl@3 \
+          -DCMAKE_CXX_FLAGS="-Wno-deprecated -Wno-idiomatic-parentheses -std=gnu++11" \
+          -DCMAKE_C_FLAGS="-Wno-deprecated" \
           -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-w" \
           ..
 
+    # Optimized compilation: Attempts -j4 parallel paths for speed, switches to -j1 if racing triggers
     - name: Build Project
       run: |
         cd build
-        # Force the compiler backend to ignore any unknown/deprecated flags passed down to submodules
-        export CFLAGS="-Wno-everything -Wno-unknown-argument -w"
-        export CXXFLAGS="-Wno-everything -Wno-unknown-argument -w"
-        export KCFLAGS="-Wno-everything -Wno-unknown-argument -w"
-        export WARNING_CFLAGS="-w -Wno-unknown-argument"
-        export ARCHFLAGS="-arch arm64 -arch x86_64"
+        ulimit -n 4096
         
-        ninja || ninja --verbose -j 1
+        export SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
+        export RC_ARCHS="x86_64"
+        export ARCHFLAGS="-arch x86_64"
+        export MAKEFLAGS="-j1"
+        
+        echo "=== Attempting Parallel Build (-j4) ==="
+        ninja -j4 --verbose || { echo "Parallel build failed. Falling back to Serial Build (-j1)..."; ninja -j1 --verbose; }
 
-    - name: Upload Build Artifacts
+    # Post-execution trap step. Tracks down hidden errors inside child cmake instances
+    - name: Dump Detailed Failure Logs
+      if: failure()
+      run: |
+        echo "=== SCANNING FOR INNER LOG ENCAPSULATIONS ==="
+        find build \( -name "*.log" -o -name "CMakeError.log" \) -exec echo "--- LOG: {} ---" \; -exec head -n 150 {} \;
+
+    # Uploads key kernel binaries rather than choking on giant build trees
+    - name: Upload Kernel Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: puredarwin-compiled-output
-        path: build/
+        name: puredarwin-x86_64-kernel
+        path: |
+          build/src/Kernel/
+          build/**/*.dylib
+          build/**/*.a
         if-no-files-found: warn
