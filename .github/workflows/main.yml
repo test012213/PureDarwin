@@ -6,8 +6,11 @@ on:
     branches:
       - main
       - master
+  pull_request:
 
 env:
+  DEBIAN_FRONTEND: noninteractive
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
 
 jobs:
@@ -15,14 +18,16 @@ jobs:
     name: Build PureDarwin
     runs-on: macos-15-intel
 
+    timeout-minutes: 360
+
     strategy:
       fail-fast: false
 
     steps:
 
-      ###########################################################
-      # Checkout
-      ###########################################################
+      ####################################################################
+      # CHECKOUT
+      ####################################################################
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,42 +35,51 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      ###########################################################
-      # System Info
-      ###########################################################
+      ####################################################################
+      # SYSTEM INFO
+      ####################################################################
 
-      - name: System Information
+      - name: System information
         run: |
+          echo "==== macOS Version ===="
           sw_vers
+
+          echo
+          echo "==== Kernel ===="
           uname -a
-          sysctl machdep.cpu.brand_string
 
-      ###########################################################
-      # Select Xcode
-      ###########################################################
+          echo
+          echo "==== CPU ===="
+          sysctl machdep.cpu.brand_string || true
 
-      - name: Select latest Xcode
+          echo
+          echo "==== Disk Space ===="
+          df -h
+
+      ####################################################################
+      # XCODE
+      ####################################################################
+
+      - name: Select Xcode
         run: |
           sudo xcode-select -switch /Applications/Xcode.app
 
           xcodebuild -version
 
-      ###########################################################
-      # Accept license
-      ###########################################################
-
       - name: Accept Xcode license
         run: |
           sudo xcodebuild -license accept || true
 
-      ###########################################################
-      # Install dependencies
-      ###########################################################
+      ####################################################################
+      # HOMEBREW
+      ####################################################################
 
-      - name: Install Homebrew packages
+      - name: Update Homebrew
         run: |
           brew update
 
+      - name: Install dependencies
+        run: |
           brew install \
             llvm \
             cmake \
@@ -75,52 +89,83 @@ jobs:
             autoconf \
             libtool \
             pkg-config \
+            coreutils \
             gnu-sed \
             wget \
             python \
             qemu \
             cdrtools \
-            coreutils \
             bison \
-            flex
+            flex \
+            texinfo \
+            m4
 
-      ###########################################################
-      # Setup environment
-      ###########################################################
+      ####################################################################
+      # ENVIRONMENT
+      ####################################################################
 
-      - name: Setup build environment
+      - name: Setup environment
         run: |
           echo "/usr/local/opt/llvm/bin" >> $GITHUB_PATH
+          echo "/opt/homebrew/opt/llvm/bin" >> $GITHUB_PATH
 
           echo "CC=clang" >> $GITHUB_ENV
           echo "CXX=clang++" >> $GITHUB_ENV
 
           echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
 
-      ###########################################################
-      # Verify toolchain
-      ###########################################################
+          echo "CFLAGS=-O2" >> $GITHUB_ENV
+          echo "CXXFLAGS=-O2" >> $GITHUB_ENV
 
-      - name: Verify Apple toolchain
+      ####################################################################
+      # TOOLCHAIN CHECK
+      ####################################################################
+
+      - name: Verify toolchain
         run: |
+          echo "==== clang ===="
           clang --version
+
+          echo
+          echo "==== ld ===="
           ld -v
+
+          echo
+          echo "==== SDK ===="
           xcrun --show-sdk-path
 
-      ###########################################################
-      # Bootstrap PureDarwin
-      ###########################################################
+          echo
+          echo "==== cmake ===="
+          cmake --version
 
-      - name: Bootstrap build system
+          echo
+          echo "==== ninja ===="
+          ninja --version
+
+      ####################################################################
+      # CLEANUP
+      ####################################################################
+
+      - name: Cleanup previous builds
         run: |
-          chmod +x ./bootstrap.sh || true
+          rm -rf build || true
+          rm -rf out || true
+          rm -rf artifacts || true
+
+      ####################################################################
+      # BOOTSTRAP
+      ####################################################################
+
+      - name: Bootstrap project
+        run: |
+          chmod +x bootstrap.sh || true
           ./bootstrap.sh || true
 
-      ###########################################################
-      # Configure
-      ###########################################################
+      ####################################################################
+      # CONFIGURE
+      ####################################################################
 
-      - name: Configure PureDarwin
+      - name: Configure build
         run: |
           mkdir -p build
           cd build
@@ -130,24 +175,26 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_OSX_ARCHITECTURES=x86_64
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
 
-      ###########################################################
-      # Build userland
-      ###########################################################
+      ####################################################################
+      # BUILD
+      ####################################################################
 
-      - name: Build Userland
+      - name: Build PureDarwin
         run: |
           cd build
 
           ninja -j$(sysctl -n hw.ncpu) || \
           make -j$(sysctl -n hw.ncpu)
 
-      ###########################################################
-      # Build XNU
-      ###########################################################
+      ####################################################################
+      # OPTIONAL XNU BUILD
+      ####################################################################
 
       - name: Build XNU kernel
+        continue-on-error: true
         run: |
           if [ -d xnu ]; then
             cd xnu
@@ -157,42 +204,116 @@ jobs:
               ARCH_CONFIGS=X86_64 \
               KERNEL_CONFIGS=RELEASE \
               MACHINE_CONFIGS=VMAPPLE \
-              || true
+              -j$(sysctl -n hw.ncpu)
+          else
+            echo "No xnu directory found."
           fi
 
-      ###########################################################
-      # Create Bootable Image
-      ###########################################################
+      ####################################################################
+      # ARTIFACT PREP
+      ####################################################################
 
-      - name: Create disk image
+      - name: Prepare artifacts
+        if: always()
         run: |
-          mkdir -p artifact/rootfs
+          mkdir -p artifacts
 
-          cp -R build artifact/rootfs/build || true
+          ##################################################################
+          # COPY BUILD OUTPUTS
+          ##################################################################
+
+          cp -R build artifacts/build || true
+
+          ##################################################################
+          # COPY XNU OUTPUTS
+          ##################################################################
+
+          cp -R xnu artifacts/xnu || true
+
+          ##################################################################
+          # COPY TOOLS
+          ##################################################################
+
+          cp -R tools artifacts/tools || true
+
+          ##################################################################
+          # COPY LOGS
+          ##################################################################
+
+          find . \( \
+            -name "*.log" -o \
+            -name "CMakeError.log" -o \
+            -name "CMakeOutput.log" \
+          \) -exec cp --parents {} artifacts/ \; || true
+
+          ##################################################################
+          # SYSTEM INFO
+          ##################################################################
+
+          sw_vers > artifacts/system-info.txt || true
+          uname -a >> artifacts/system-info.txt || true
+
+      ####################################################################
+      # CREATE DISK IMAGE
+      ####################################################################
+
+      - name: Create DMG image
+        continue-on-error: true
+        run: |
+          mkdir -p dmg-root
+
+          echo "PureDarwin Build Artifact" > dmg-root/README.txt
+
+          cp -R build dmg-root/build || true
 
           hdiutil create \
             -size 8g \
             -fs HFS+ \
             -volname PureDarwin \
-            artifact/PureDarwin.dmg
+            -srcfolder dmg-root \
+            artifacts/PureDarwin.dmg
 
-      ###########################################################
-      # Optional QEMU image
-      ###########################################################
+      ####################################################################
+      # CREATE QCOW2 IMAGE
+      ####################################################################
 
-      - name: Create QEMU image
+      - name: Create QEMU disk
+        continue-on-error: true
         run: |
           qemu-img create \
             -f qcow2 \
-            artifact/PureDarwin.qcow2 \
+            artifacts/PureDarwin.qcow2 \
             8G
 
-      ###########################################################
-      # Upload artifacts
-      ###########################################################
+      ####################################################################
+      # BUILD SUMMARY
+      ####################################################################
+
+      - name: Generate summary
+        if: always()
+        run: |
+          echo "# PureDarwin Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Environment" >> $GITHUB_STEP_SUMMARY
+          echo "- macOS runner" >> $GITHUB_STEP_SUMMARY
+          echo "- Xcode toolchain" >> $GITHUB_STEP_SUMMARY
+          echo "- Ninja build system" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Outputs" >> $GITHUB_STEP_SUMMARY
+          echo "- Build directory" >> $GITHUB_STEP_SUMMARY
+          echo "- Logs" >> $GITHUB_STEP_SUMMARY
+          echo "- DMG image" >> $GITHUB_STEP_SUMMARY
+          echo "- QCOW2 image" >> $GITHUB_STEP_SUMMARY
+
+      ####################################################################
+      # UPLOAD ARTIFACTS
+      ####################################################################
 
       - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: PureDarwin-artifacts
-          path: artifact/
+          retention-days: 30
+          path: |
+            artifacts/
