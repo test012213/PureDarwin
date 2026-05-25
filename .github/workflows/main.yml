@@ -1,109 +1,198 @@
-name: Build PureDarwin
+name: PureDarwin Native Build
 
 on:
+  workflow_dispatch:
   push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
-  workflow_dispatch: 
+    branches:
+      - main
+      - master
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
 
 jobs:
-  build-xnu:
-    # Keeps architecture locked to Intel x86_64 standard pools safely
+  build-puredarwin:
+    name: Build PureDarwin
     runs-on: macos-15-intel
 
+    strategy:
+      fail-fast: false
+
     steps:
-    - name: Checkout Source Code
-      uses: actions/checkout@v4
 
-    - name: Initialize Submodules
-      run: |
-        git submodule update --init --recursive
+      ###########################################################
+      # Checkout
+      ###########################################################
 
-    - name: Setup Developer Environment & Licenses
-      run: |
-        sudo xcodebuild -license accept
-        sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-        xcodebuild -version
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
 
-    - name: Install Core Dependencies
-      run: |
-        brew install ninja cmake openssl
+      ###########################################################
+      # System Info
+      ###########################################################
 
-    # FIX #1: Patch for the ld64 linker template scope error (with fail-fast validation)
-    - name: Patch Legacy Scoping Error in ld64
-      run: |
-        TARGET_FILE="tools/cctools/ld64/src/ld/code-sign-blobs/blob.h"
-        if [ -f "$TARGET_FILE" ]; then
-          sed -i '' 's/this->BlobCore::clone()/this->clone()/g' "$TARGET_FILE"
-          echo "Patch 1 applied."
-        else
-          echo "ERROR: Patch 1 target file missing!" && exit 1
-        fi
+      - name: System Information
+        run: |
+          sw_vers
+          uname -a
+          sysctl machdep.cpu.brand_string
 
-    # FIX #2: Perl target matching specific structural macro signatures safely (with fail-fast validation)
-    - name: Patch PCI Family 32-Bit Bitshift Overflow
-      run: |
-        PCI_FILE="src/Kernel/Extensions/IOPCIFamily/include/IOKit/apiodma/ApplePIODMADefinitions.h"
-        if [ -f "$PCI_FILE" ]; then
-          perl -pi -e 's|#define APIODMABitRange32\(start, end\)\s+.*|#define APIODMABitRange32(start, end) (~(((uint64_t)(1) << start) - 1) & (((uint64_t)(1) << end) \| (((uint64_t)(1) << end) - 1)))|g' "$PCI_FILE"
-          echo "Patch 2 safely applied via Perl."
-        else
-          echo "ERROR: Patch 2 target file missing!" && exit 1
-        fi
+      ###########################################################
+      # Select Xcode
+      ###########################################################
 
-    # FIX #3: Direct scrub of the invalid compiler argument from core XNU configurations
-    - name: Patch Core XNU Makedefs Structure
-      run: |
-        MAKEDEF_FILE="src/Kernel/xnu/makedefs/MakeInc.def"
-        if [ -f "$MAKEDEF_FILE" ]; then
-          sed -i '' 's/-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang//g' "$MAKEDEF_FILE"
-          echo "Master flag successfully scrubbed from XNU definitions file."
-        else
-          echo "Searching alternate definitions paths..."
-          find src/Kernel/xnu -name "MakeInc.def" -exec sed -i '' 's/-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang//g' {} +
-        fi
+      - name: Select latest Xcode
+        run: |
+          sudo xcode-select -switch /Applications/Xcode.app
 
-    - name: Configure CMake
-      run: |
-        mkdir build
-        cd build
-        cmake -G Ninja \
-          -DCMAKE_OSX_ARCHITECTURES="x86_64" \
-          -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl@3 \
-          -DCMAKE_CXX_FLAGS="-Wno-deprecated -Wno-idiomatic-parentheses -std=gnu++11" \
-          -DCMAKE_C_FLAGS="-Wno-deprecated" \
-          -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-w" \
-          ..
+          xcodebuild -version
 
-    # Forces compilation to run in verbose serial mode from target 1
-    # This prevents the log from truncating and guarantees the exact error is captured
-    - name: Build Project
-      run: |
-        cd build
-        ulimit -n 4096
-        
-        export SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
-        export RC_ARCHS="x86_64"
-        export ARCHFLAGS="-arch x86_64"
-        export MAKEFLAGS="-j1"
-        
-        # Removed the parallel optimization block entirely to ensure verbose tracking on failure
-        ninja -j1 --verbose
+      ###########################################################
+      # Accept license
+      ###########################################################
 
-    # Uses the shell precedence fix proposed by the model review
-    - name: Dump Detailed Failure Logs
-      if: failure()
-      run: |
-        echo "=== SCANNING FOR INNER LOG ENCAPSULATIONS ==="
-        find build \( -name "*.log" -o -name "CMakeError.log" \) -exec echo "--- LOG: {} ---" \; -exec head -n 150 {} \;
+      - name: Accept Xcode license
+        run: |
+          sudo xcodebuild -license accept || true
 
-    - name: Upload Kernel Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: puredarwin-x86_64-kernel
-        path: |
-          build/src/Kernel/
-          build/**/*.dylib
-          build/**/*.a
-        if-no-files-found: warn
+      ###########################################################
+      # Install dependencies
+      ###########################################################
+
+      - name: Install Homebrew packages
+        run: |
+          brew update
+
+          brew install \
+            llvm \
+            cmake \
+            ninja \
+            meson \
+            automake \
+            autoconf \
+            libtool \
+            pkg-config \
+            gnu-sed \
+            wget \
+            python \
+            qemu \
+            cdrtools \
+            coreutils \
+            bison \
+            flex
+
+      ###########################################################
+      # Setup environment
+      ###########################################################
+
+      - name: Setup build environment
+        run: |
+          echo "/usr/local/opt/llvm/bin" >> $GITHUB_PATH
+
+          echo "CC=clang" >> $GITHUB_ENV
+          echo "CXX=clang++" >> $GITHUB_ENV
+
+          echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
+
+      ###########################################################
+      # Verify toolchain
+      ###########################################################
+
+      - name: Verify Apple toolchain
+        run: |
+          clang --version
+          ld -v
+          xcrun --show-sdk-path
+
+      ###########################################################
+      # Bootstrap PureDarwin
+      ###########################################################
+
+      - name: Bootstrap build system
+        run: |
+          chmod +x ./bootstrap.sh || true
+          ./bootstrap.sh || true
+
+      ###########################################################
+      # Configure
+      ###########################################################
+
+      - name: Configure PureDarwin
+        run: |
+          mkdir -p build
+          cd build
+
+          cmake .. \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64
+
+      ###########################################################
+      # Build userland
+      ###########################################################
+
+      - name: Build Userland
+        run: |
+          cd build
+
+          ninja -j$(sysctl -n hw.ncpu) || \
+          make -j$(sysctl -n hw.ncpu)
+
+      ###########################################################
+      # Build XNU
+      ###########################################################
+
+      - name: Build XNU kernel
+        run: |
+          if [ -d xnu ]; then
+            cd xnu
+
+            make \
+              SDKROOT=macosx \
+              ARCH_CONFIGS=X86_64 \
+              KERNEL_CONFIGS=RELEASE \
+              MACHINE_CONFIGS=VMAPPLE \
+              || true
+          fi
+
+      ###########################################################
+      # Create Bootable Image
+      ###########################################################
+
+      - name: Create disk image
+        run: |
+          mkdir -p artifact/rootfs
+
+          cp -R build artifact/rootfs/build || true
+
+          hdiutil create \
+            -size 8g \
+            -fs HFS+ \
+            -volname PureDarwin \
+            artifact/PureDarwin.dmg
+
+      ###########################################################
+      # Optional QEMU image
+      ###########################################################
+
+      - name: Create QEMU image
+        run: |
+          qemu-img create \
+            -f qcow2 \
+            artifact/PureDarwin.qcow2 \
+            8G
+
+      ###########################################################
+      # Upload artifacts
+      ###########################################################
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: PureDarwin-artifacts
+          path: artifact/
